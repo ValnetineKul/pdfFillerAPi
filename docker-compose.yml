@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: pdffiller
+      POSTGRES_PASSWORD: pdffiller
+      POSTGRES_DB: pdffiller
+    ports:
+      - "5432:5432"
+    volumes:
+      - pdffiller-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pdffiller -d pdffiller"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://pdffiller:pdffiller@postgres:5432/pdffiller?sslmode=disable
+      CHATPLACE_WEBHOOK_SECRET: dev-secret
+      SEED_LOGIN: anna
+      SEED_PASSWORD: password1
+      SEED_CREDITS: "5"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pdffiller-pg:
