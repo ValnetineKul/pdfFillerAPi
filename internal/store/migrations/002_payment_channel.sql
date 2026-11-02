@@ -1,0 +1,2 @@
+ALTER TABLE chatplace_payments
+  ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT '';

@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"pdffiller/api/internal/store"
@@ -12,17 +16,31 @@ import (
 
 const sessionCookie = "pdffiller_session"
 
-type Server struct {
-	store  *store.Store
-	secret string
-	secure bool
+type MessageSender interface {
+	SendMessage(ctx context.Context, chatID, text string) error
 }
 
-func New(data *store.Store, webhookSecret string) *Server {
+type Config struct {
+	WebhookSecret string
+	LoginURL      string
+	Sender        MessageSender
+}
+
+type Server struct {
+	store    *store.Store
+	secret   string
+	secure   bool
+	loginURL string
+	sender   MessageSender
+}
+
+func New(data *store.Store, cfg Config) *Server {
 	return &Server{
-		store:  data,
-		secret: webhookSecret,
-		secure: os.Getenv("COOKIE_SECURE") == "1",
+		store:    data,
+		secret:   cfg.WebhookSecret,
+		secure:   os.Getenv("COOKIE_SECURE") == "1",
+		loginURL: strings.TrimSpace(cfg.LoginURL),
+		sender:   cfg.Sender,
 	}
 }
 
@@ -105,51 +123,94 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) chatPlace(w http.ResponseWriter, r *http.Request) {
-	if s.secret == "" || r.Header.Get("X-Webhook-Secret") != s.secret {
+	if !s.authorized(r) {
 		writeError(w, http.StatusUnauthorized, "Неверный секрет вебхука.")
 		return
 	}
-	var body struct {
-		PaymentID         string `json:"paymentId"`
-		InstagramUsername string `json:"instagramUsername"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	payment, err := readPayment(r)
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "Некорректный запрос.")
 		return
 	}
-	result, err := s.store.ApplyChatPlacePayment(r.Context(), body.PaymentID, body.InstagramUsername)
+	result, err := s.store.ApplyChatPlacePayment(r.Context(), payment.PaymentID, payment.Login, payment.Channel)
 	if errors.Is(err, store.ErrBadPayment) {
-		writeError(w, http.StatusBadRequest, "Нужны paymentId и instagramUsername.")
+		writeError(w, http.StatusBadRequest, "Нужен username из Instagram или Telegram.")
 		return
 	}
 	if errors.Is(err, store.ErrDuplicatePayment) {
-		user, lookupErr := s.store.UserByLogin(r.Context(), body.InstagramUsername)
+		user, lookupErr := s.store.UserByLogin(r.Context(), payment.Login)
 		if lookupErr != nil {
 			writeError(w, http.StatusConflict, "Эта оплата уже учтена.")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"login":             user.Login,
-			"credits":           user.Credits,
-			"chatplacePayments": user.ChatPlacePayments,
-			"created":           false,
-		})
+		s.writePayment(w, r, user, "", payment, noticeDuplicate)
 		return
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "Не удалось учесть оплату.")
 		return
 	}
-	payload := map[string]any{
-		"login":             result.User.Login,
-		"credits":           result.User.Credits,
-		"chatplacePayments": result.User.ChatPlacePayments,
-		"created":           result.Created,
-	}
+	notice := noticeRenewed
+	password := ""
 	if result.Created {
-		payload["password"] = result.Password
+		notice = noticeCreated
+		password = result.Password
+	}
+	s.writePayment(w, r, result.User, password, payment, notice)
+}
+
+func (s *Server) writePayment(w http.ResponseWriter, r *http.Request, user store.User, password string, payment paymentInput, notice paymentNotice) {
+	message := credentialsMessage(user.Login, password, s.loginURL, notice)
+	delivered, deliveryError := s.deliver(r.Context(), payment.ChatID, message)
+	payload := map[string]any{
+		"login":             user.Login,
+		"credits":           user.Credits,
+		"chatplacePayments": user.ChatPlacePayments,
+		"created":           notice == noticeCreated,
+		"channel":           payment.Channel,
+		"message":           message,
+		"delivered":         delivered,
+	}
+	if notice == noticeCreated {
+		payload["password"] = password
+	}
+	if deliveryError != "" {
+		payload["deliveryError"] = deliveryError
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+func (s *Server) deliver(ctx context.Context, chatID, message string) (bool, string) {
+	if strings.TrimSpace(chatID) == "" {
+		return false, ""
+	}
+	if s.sender == nil {
+		return false, "CHATPLACE_API_KEY не задан. Отправьте поле message клиенту из автоматизации."
+	}
+	if err := s.sender.SendMessage(ctx, chatID, message); err != nil {
+		log.Printf("chatplace delivery failed: %v", err)
+		return false, err.Error()
+	}
+	return true, ""
+}
+
+func (s *Server) authorized(r *http.Request) bool {
+	if secretMatch(r.Header.Get("X-Webhook-Secret"), s.secret) {
+		return true
+	}
+	header := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(header) > len(prefix) && strings.EqualFold(header[:len(prefix)], prefix) {
+		return secretMatch(strings.TrimSpace(header[len(prefix):]), s.secret)
+	}
+	return false
+}
+
+func secretMatch(got, want string) bool {
+	if got == "" || want == "" || len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
 }
 
 func (s *Server) userFromCookie(w http.ResponseWriter, r *http.Request) (store.User, bool) {

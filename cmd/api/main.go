@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"pdffiller/api/internal/chatplace"
 	"pdffiller/api/internal/httpapi"
 	"pdffiller/api/internal/store"
 )
@@ -40,14 +41,28 @@ func main() {
 		log.Fatal(err)
 	}
 
-	address := os.Getenv("ADDR")
-	if address == "" {
-		address = ":8080"
-	}
+	address := listenAddress()
 	log.Printf("listening on %s", address)
-	if err := http.ListenAndServe(address, httpapi.New(data, webhookSecret).Handler()); err != nil {
+	cfg := httpapi.Config{
+		WebhookSecret: webhookSecret,
+		LoginURL:      os.Getenv("APP_LOGIN_URL"),
+	}
+	if apiKey := os.Getenv("CHATPLACE_API_KEY"); apiKey != "" {
+		cfg.Sender = chatplace.NewClient(apiKey, os.Getenv("CHATPLACE_API_URL"))
+	}
+	if err := http.ListenAndServe(address, httpapi.New(data, cfg).Handler()); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func listenAddress() string {
+	if address := strings.TrimSpace(os.Getenv("ADDR")); address != "" {
+		return address
+	}
+	if port := strings.TrimPrefix(strings.TrimSpace(os.Getenv("PORT")), ":"); port != "" {
+		return ":" + port
+	}
+	return ":8080"
 }
 
 // loadDotEnv sets missing process env vars from a local .env file (KEY=VALUE).

@@ -45,7 +45,10 @@ func (s *Store) Close() {
 }
 
 func (s *Store) migrate(ctx context.Context) error {
-	_, err := s.pool.Exec(ctx, migrationSQL)
+	if _, err := s.pool.Exec(ctx, migrationSQL); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, migrationChannelSQL)
 	return err
 }
 
@@ -137,11 +140,13 @@ type PaymentResult struct {
 	Password string
 }
 
-func (s *Store) ApplyChatPlacePayment(ctx context.Context, externalID, instagram string) (PaymentResult, error) {
+func (s *Store) ApplyChatPlacePayment(ctx context.Context, externalID, instagram, channel string) (PaymentResult, error) {
 	login := normalizeLogin(instagram)
-	if login == "" || strings.TrimSpace(externalID) == "" {
+	if login == "" {
 		return PaymentResult{}, ErrBadPayment
 	}
+	externalID = strings.TrimSpace(externalID)
+	channel = strings.TrimSpace(channel)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -179,10 +184,32 @@ func (s *Store) ApplyChatPlacePayment(ctx context.Context, externalID, instagram
 		return PaymentResult{}, err
 	}
 
+	var locked string
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, user.ID).Scan(&locked); err != nil {
+		return PaymentResult{}, err
+	}
+
+	if externalID == "" {
+		var recent string
+		err = tx.QueryRow(ctx, `
+			SELECT external_id
+			FROM chatplace_payments
+			WHERE user_id = $1 AND created_at > now() - interval '3 minutes'
+			LIMIT 1
+		`, user.ID).Scan(&recent)
+		if err == nil {
+			return PaymentResult{}, ErrDuplicatePayment
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return PaymentResult{}, err
+		}
+		externalID = user.Login + ":" + time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
 	_, err = tx.Exec(ctx, `
-		INSERT INTO chatplace_payments (id, external_id, user_id)
-		VALUES ($1, $2, $3)
-	`, newID(), strings.TrimSpace(externalID), user.ID)
+		INSERT INTO chatplace_payments (id, external_id, user_id, channel)
+		VALUES ($1, $2, $3, $4)
+	`, newID(), externalID, user.ID, channel)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -270,6 +297,9 @@ func randomPassword() (string, error) {
 
 //go:embed migrations/001_init.sql
 var migrationSQL string
+
+//go:embed migrations/002_payment_channel.sql
+var migrationChannelSQL string
 
 var (
 	ErrUnauthorized     = errors.New("unauthorized")
