@@ -18,6 +18,7 @@ const sessionCookie = "pdffiller_session"
 
 type MessageSender interface {
 	SendMessage(ctx context.Context, chatID, text string) error
+	SendInstagram(ctx context.Context, username, text string) error
 }
 
 type Config struct {
@@ -161,7 +162,7 @@ func (s *Server) chatPlace(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) writePayment(w http.ResponseWriter, r *http.Request, user store.User, password string, payment paymentInput, notice paymentNotice) {
 	message := credentialsMessage(user.Login, password, s.loginURL, notice)
-	delivered, deliveryError := s.deliver(r.Context(), payment.ChatID, message)
+	delivered, deliveryError := s.deliver(r.Context(), payment.Login, payment.ChatID, message)
 	payload := map[string]any{
 		"login":             user.Login,
 		"credits":           user.Credits,
@@ -180,15 +181,17 @@ func (s *Server) writePayment(w http.ResponseWriter, r *http.Request, user store
 	writeJSON(w, http.StatusOK, payload)
 }
 
-func (s *Server) deliver(ctx context.Context, chatID, message string) (bool, string) {
-	if strings.TrimSpace(chatID) == "" {
-		return false, ""
-	}
+func (s *Server) deliver(ctx context.Context, username, chatID, message string) (bool, string) {
 	if s.sender == nil {
-		return false, "CHATPLACE_API_KEY не задан. Отправьте поле message клиенту из автоматизации."
+		return false, "CHATPLACE_API_KEY не задан. Без него логин и пароль не уйдут в Instagram."
 	}
-	if err := s.sender.SendMessage(ctx, chatID, message); err != nil {
-		log.Printf("chatplace delivery failed: %v", err)
+	if err := s.sender.SendInstagram(ctx, username, message); err != nil {
+		if strings.TrimSpace(chatID) != "" {
+			if sendErr := s.sender.SendMessage(ctx, chatID, message); sendErr == nil {
+				return true, ""
+			}
+		}
+		log.Printf("instagram delivery failed: %v", err)
 		return false, err.Error()
 	}
 	return true, ""

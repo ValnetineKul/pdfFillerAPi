@@ -32,6 +32,36 @@ func TestSendMessage(t *testing.T) {
 	}
 }
 
+func TestSendInstagram(t *testing.T) {
+	var sent, listed string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(string(body), "tools/list"):
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"chats_list","inputSchema":{"type":"object","properties":{"search":{"type":"string"}}}}]}}`))
+		case strings.Contains(string(body), "chats_list"):
+			listed = string(body)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"{\"chats\":[{\"id\":\"tg-1\",\"username\":\"anna\",\"channel\":\"telegram\"},{\"id\":\"ig-1\",\"username\":\"@Anna\",\"channel\":\"instagram\"}]}"}]}}`))
+		default:
+			sent = string(body)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"isError":false}}`))
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient("test-key", server.URL)
+	if err := client.SendInstagram(context.Background(), "@Anna", "Логин: anna\nПароль: secret"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(listed, `"search":"anna"`) {
+		t.Fatalf("search body: %s", listed)
+	}
+	if !strings.Contains(sent, `"chatId":"ig-1"`) || !strings.Contains(sent, "Пароль: secret") {
+		t.Fatalf("sent: %s", sent)
+	}
+}
+
 func TestSendMessageRejectsToolError(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

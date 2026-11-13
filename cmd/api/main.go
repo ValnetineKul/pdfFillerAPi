@@ -49,6 +49,8 @@ func main() {
 	}
 	if apiKey := os.Getenv("CHATPLACE_API_KEY"); apiKey != "" {
 		cfg.Sender = chatplace.NewClient(apiKey, os.Getenv("CHATPLACE_API_URL"))
+	} else {
+		log.Printf("CHATPLACE_API_KEY is empty; payment will not send the Instagram message")
 	}
 	if err := http.ListenAndServe(address, httpapi.New(data, cfg).Handler()); err != nil {
 		log.Fatal(err)
