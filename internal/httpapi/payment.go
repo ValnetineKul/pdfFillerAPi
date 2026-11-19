@@ -179,7 +179,7 @@ func credentialsMessage(login, password, loginURL string, notice paymentNotice) 
 	case noticeRenewed:
 		b.WriteString("Оплата прошла. На аккаунт добавлена 1 генерация.\n\n")
 		b.WriteString("Логин: " + login + "\n")
-		b.WriteString("Пароль отправляли после первой оплаты.\n")
+		b.WriteString("Пароль: " + password + "\n")
 	default:
 		b.WriteString("Эта оплата уже учтена.\n\n")
 		b.WriteString("Логин: " + login + "\n")

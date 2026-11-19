@@ -125,16 +125,19 @@ func (s *Server) consume(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) chatPlace(w http.ResponseWriter, r *http.Request) {
 	if !s.authorized(r) {
+		log.Printf("chatplace payment rejected: bad webhook secret")
 		writeError(w, http.StatusUnauthorized, "Неверный секрет вебхука.")
 		return
 	}
 	payment, err := readPayment(r)
 	if err != nil {
+		log.Printf("chatplace payment rejected: bad request body")
 		writeError(w, http.StatusBadRequest, "Некорректный запрос.")
 		return
 	}
 	result, err := s.store.ApplyChatPlacePayment(r.Context(), payment.PaymentID, payment.Login, payment.Channel)
 	if errors.Is(err, store.ErrBadPayment) {
+		log.Printf("chatplace payment rejected: missing username")
 		writeError(w, http.StatusBadRequest, "Нужен username из Instagram или Telegram.")
 		return
 	}
@@ -148,16 +151,15 @@ func (s *Server) chatPlace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		log.Printf("chatplace payment failed: login=%s err=%v", payment.Login, err)
 		writeError(w, http.StatusInternalServerError, "Не удалось учесть оплату.")
 		return
 	}
 	notice := noticeRenewed
-	password := ""
 	if result.Created {
 		notice = noticeCreated
-		password = result.Password
 	}
-	s.writePayment(w, r, result.User, password, payment, notice)
+	s.writePayment(w, r, result.User, result.Password, payment, notice)
 }
 
 func (s *Server) writePayment(w http.ResponseWriter, r *http.Request, user store.User, password string, payment paymentInput, notice paymentNotice) {
@@ -172,12 +174,13 @@ func (s *Server) writePayment(w http.ResponseWriter, r *http.Request, user store
 		"message":           message,
 		"delivered":         delivered,
 	}
-	if notice == noticeCreated {
+	if password != "" {
 		payload["password"] = password
 	}
 	if deliveryError != "" {
 		payload["deliveryError"] = deliveryError
 	}
+	log.Printf("chatplace payment: login=%s created=%t delivered=%t deliveryError=%s", user.Login, notice == noticeCreated, delivered, deliveryError)
 	writeJSON(w, http.StatusOK, payload)
 }
 

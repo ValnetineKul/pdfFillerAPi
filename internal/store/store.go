@@ -48,7 +48,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.pool.Exec(ctx, migrationSQL); err != nil {
 		return err
 	}
-	_, err := s.pool.Exec(ctx, migrationChannelSQL)
+	if _, err := s.pool.Exec(ctx, migrationChannelSQL); err != nil {
+		return err
+	}
+	_, err := s.pool.Exec(ctx, migrationLoginCaseSQL)
 	return err
 }
 
@@ -75,7 +78,7 @@ func (s *Store) Authenticate(ctx context.Context, login, password string) (User,
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, login, password_hash, credits, chatplace_payments
 		FROM users
-		WHERE login = $1
+		WHERE lower(login) = lower($1)
 	`, normalizeLogin(login)).Scan(&user.ID, &user.Login, &hash, &user.Credits, &user.ChatPlacePayments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrUnauthorized
@@ -166,26 +169,22 @@ func (s *Store) ApplyChatPlacePayment(ctx context.Context, externalID, instagram
 	var user User
 	created := false
 	err = tx.QueryRow(ctx, `
-		INSERT INTO users (id, login, password_hash, credits, chatplace_payments)
-		VALUES ($1, $2, $3, 0, 0)
-		ON CONFLICT (login) DO NOTHING
-		RETURNING id, login, credits, chatplace_payments
-	`, newID(), login, string(hash)).Scan(&user.ID, &user.Login, &user.Credits, &user.ChatPlacePayments)
+		SELECT id, login, credits, chatplace_payments
+		FROM users
+		WHERE lower(login) = lower($1)
+		FOR UPDATE
+	`, login).Scan(&user.ID, &user.Login, &user.Credits, &user.ChatPlacePayments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `
-			SELECT id, login, credits, chatplace_payments
-			FROM users
-			WHERE login = $1
-		`, login).Scan(&user.ID, &user.Login, &user.Credits, &user.ChatPlacePayments)
-	} else if err == nil {
-		created = true
+			INSERT INTO users (id, login, password_hash, credits, chatplace_payments)
+			VALUES ($1, $2, $3, 0, 0)
+			RETURNING id, login, credits, chatplace_payments
+		`, newID(), login, string(hash)).Scan(&user.ID, &user.Login, &user.Credits, &user.ChatPlacePayments)
+		if err == nil {
+			created = true
+		}
 	}
 	if err != nil {
-		return PaymentResult{}, err
-	}
-
-	var locked string
-	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, user.ID).Scan(&locked); err != nil {
 		return PaymentResult{}, err
 	}
 
@@ -220,11 +219,13 @@ func (s *Store) ApplyChatPlacePayment(ctx context.Context, externalID, instagram
 
 	err = tx.QueryRow(ctx, `
 		UPDATE users
-		SET credits = credits + 1,
+		SET login = $2,
+		    password_hash = $3,
+		    credits = credits + 1,
 		    chatplace_payments = chatplace_payments + 1
 		WHERE id = $1
 		RETURNING id, login, credits, chatplace_payments
-	`, user.ID).Scan(&user.ID, &user.Login, &user.Credits, &user.ChatPlacePayments)
+	`, user.ID, login, string(hash)).Scan(&user.ID, &user.Login, &user.Credits, &user.ChatPlacePayments)
 	if err != nil {
 		return PaymentResult{}, err
 	}
@@ -232,11 +233,7 @@ func (s *Store) ApplyChatPlacePayment(ctx context.Context, externalID, instagram
 		return PaymentResult{}, err
 	}
 
-	result := PaymentResult{User: user, Created: created}
-	if created {
-		result.Password = password
-	}
-	return result, nil
+	return PaymentResult{User: user, Created: created, Password: password}, nil
 }
 
 func (s *Store) UserByLogin(ctx context.Context, login string) (User, error) {
@@ -244,7 +241,7 @@ func (s *Store) UserByLogin(ctx context.Context, login string) (User, error) {
 	err := s.pool.QueryRow(ctx, `
 		SELECT id, login, credits, chatplace_payments
 		FROM users
-		WHERE login = $1
+		WHERE lower(login) = lower($1)
 	`, normalizeLogin(login)).Scan(&user.ID, &user.Login, &user.Credits, &user.ChatPlacePayments)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, ErrUnauthorized
@@ -253,10 +250,11 @@ func (s *Store) UserByLogin(ctx context.Context, login string) (User, error) {
 }
 
 func normalizeLogin(login string) string {
-	login = strings.ToLower(strings.TrimSpace(login))
+	login = strings.TrimSpace(login)
+	login = strings.TrimPrefix(login, "@")
 	var b strings.Builder
 	for _, r := range login {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '.' || r == '_' {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' {
 			b.WriteRune(r)
 		}
 	}
@@ -300,6 +298,9 @@ var migrationSQL string
 
 //go:embed migrations/002_payment_channel.sql
 var migrationChannelSQL string
+
+//go:embed migrations/003_login_case.sql
+var migrationLoginCaseSQL string
 
 var (
 	ErrUnauthorized     = errors.New("unauthorized")

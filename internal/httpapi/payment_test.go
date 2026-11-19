@@ -54,8 +54,8 @@ func TestCredentialsMessage(t *testing.T) {
 	if !strings.Contains(created, "Пароль: secret") || !strings.Contains(created, "https://app.example") {
 		t.Fatalf("created message: %s", created)
 	}
-	renewed := credentialsMessage("anna", "", "https://app.example", noticeRenewed)
-	if strings.Contains(renewed, "Пароль:") || !strings.Contains(renewed, "1 генерац") {
+	renewed := credentialsMessage("kulioValio", "secret", "https://app.example", noticeRenewed)
+	if !strings.Contains(renewed, "Пароль: secret") || !strings.Contains(renewed, "kulioValio") || !strings.Contains(renewed, "1 генерац") {
 		t.Fatalf("renewed message: %s", renewed)
 	}
 	duplicate := credentialsMessage("anna", "secret", "", noticeDuplicate)
