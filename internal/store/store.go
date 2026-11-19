@@ -188,21 +188,11 @@ func (s *Store) ApplyChatPlacePayment(ctx context.Context, externalID, instagram
 		return PaymentResult{}, err
 	}
 
+	stamp := time.Now().UTC().Format(time.RFC3339Nano)
 	if externalID == "" {
-		var recent string
-		err = tx.QueryRow(ctx, `
-			SELECT external_id
-			FROM chatplace_payments
-			WHERE user_id = $1 AND created_at > now() - interval '3 minutes'
-			LIMIT 1
-		`, user.ID).Scan(&recent)
-		if err == nil {
-			return PaymentResult{}, ErrDuplicatePayment
-		}
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return PaymentResult{}, err
-		}
-		externalID = user.Login + ":" + time.Now().UTC().Format(time.RFC3339Nano)
+		externalID = login + ":" + stamp
+	} else {
+		externalID = externalID + ":" + stamp
 	}
 
 	_, err = tx.Exec(ctx, `
